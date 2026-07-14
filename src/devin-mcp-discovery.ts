@@ -107,6 +107,8 @@ export function parseDevinMcpList(text: string): DevinMcpServer[] {
 
 /**
  * Build an MCP_SERVERS_CONFIG JSON array from parsed Devin server entries.
+ * Throws if any entry is missing a usable Command. See
+ * buildMcpServersConfigLenient for a variant that skips bad entries instead.
  */
 export function buildMcpServersConfig(
   servers: DevinMcpServer[],
@@ -126,6 +128,32 @@ export function buildMcpServersConfig(
       timeout: timeoutSeconds,
     };
   });
+}
+
+/**
+ * Like buildMcpServersConfig, but tolerates malformed entries: any server
+ * missing a usable Command is skipped (with a reason) instead of aborting
+ * the whole batch. Used by resolveMcpServersConfig so that one unexpected
+ * entry (e.g. a future non-stdio server Devin describes without a
+ * "Command:" property) doesn't prevent every other configured server from
+ * being discovered.
+ */
+export function buildMcpServersConfigLenient(
+  servers: DevinMcpServer[],
+  timeoutSeconds = 30
+): { configs: McpServersConfig[]; skipped: string[] } {
+  const configs: McpServersConfig[] = [];
+  const skipped: string[] = [];
+
+  for (const srv of servers) {
+    try {
+      configs.push(...buildMcpServersConfig([srv], timeoutSeconds));
+    } catch (err) {
+      skipped.push(`${srv.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  return { configs, skipped };
 }
 
 /**
@@ -156,6 +184,10 @@ function cleanupDiscoveredConfig(): void {
  * 2. Otherwise, run `devin mcp list`, parse the output, write a temporary
  *    config, and return that path.
  * 3. If Devin has no MCP servers or the Devin CLI is unavailable, return null.
+ * 4. This function never throws: `devin mcp list` failures, malformed server
+ *    entries, and filesystem errors are all caught, logged to stderr, and
+ *    treated as "no MCP tools available" so a discovery problem never takes
+ *    down the calling process (e.g. the standalone agent at startup).
  */
 export function resolveMcpServersConfig(
   timeoutSeconds = 30
@@ -165,32 +197,49 @@ export function resolveMcpServersConfig(
     return { configPath: envPath, source: "env", servers: [] };
   }
 
-  const listResult = runDevinMcpList();
-  if (!listResult.ok) {
+  try {
+    const listResult = runDevinMcpList();
+    if (!listResult.ok) {
+      console.error(`[mcp-discovery] ${listResult.error}`);
+      return null;
+    }
+
+    const servers = parseDevinMcpList(listResult.stdout);
+    if (servers.length === 0) {
+      return null;
+    }
+
+    const { configs, skipped } = buildMcpServersConfigLenient(servers, timeoutSeconds);
+    for (const reason of skipped) {
+      console.error(`[mcp-discovery] skipping server: ${reason}`);
+    }
+    if (configs.length === 0) {
+      return null;
+    }
+
+    cleanupDiscoveredConfig();
+    discoveredConfigPath = writeTempMcpConfig(configs);
+
+    // Best-effort cleanup on normal or signal-driven exit.
+    process.once("exit", cleanupDiscoveredConfig);
+    for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+      process.once(sig, () => {
+        cleanupDiscoveredConfig();
+        process.exit(128 + 2); // signal exit code convention
+      });
+    }
+
+    return {
+      configPath: discoveredConfigPath,
+      source: "discovered",
+      servers: configs.map((c) => c.name),
+    };
+  } catch (err) {
+    console.error(
+      `[mcp-discovery] auto-discovery failed, continuing without MCP tools: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
     return null;
   }
-
-  const servers = parseDevinMcpList(listResult.stdout);
-  if (servers.length === 0) {
-    return null;
-  }
-
-  const config = buildMcpServersConfig(servers, timeoutSeconds);
-  cleanupDiscoveredConfig();
-  discoveredConfigPath = writeTempMcpConfig(config);
-
-  // Best-effort cleanup on normal or signal-driven exit.
-  process.once("exit", cleanupDiscoveredConfig);
-  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-    process.once(sig, () => {
-      cleanupDiscoveredConfig();
-      process.exit(128 + 2); // signal exit code convention
-    });
-  }
-
-  return {
-    configPath: discoveredConfigPath,
-    source: "discovered",
-    servers: servers.map((s) => s.name),
-  };
 }

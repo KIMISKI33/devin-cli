@@ -171,7 +171,16 @@ const mcpCallToolDef: Tool = {
   },
 };
 
-const MCP_CONFIG: ResolvedMcpConfig | null = resolveMcpServersConfig();
+// resolveMcpServersConfig() is defensive internally and should already return
+// null on failure rather than throw, but auto-discovery is a best-effort
+// convenience feature: guard the call site too so a regression there can
+// never prevent the agent from starting.
+let MCP_CONFIG: ResolvedMcpConfig | null = null;
+try {
+  MCP_CONFIG = resolveMcpServersConfig();
+} catch (err) {
+  console.error(`[mcp] auto-discovery failed, continuing without MCP tools: ${err instanceof Error ? err.message : String(err)}`);
+}
 if (MCP_CONFIG) {
   console.error(`[mcp] ${MCP_CONFIG.source} config: ${MCP_CONFIG.configPath}`);
   if (MCP_CONFIG.servers.length > 0) {

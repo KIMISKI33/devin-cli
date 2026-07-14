@@ -137,16 +137,21 @@ function Split-CommandLine {
 function ConvertTo-McpServerJson {
     param([array]$Servers)
 
+    # Skip (rather than abort on) any malformed entry so that one unexpected
+    # server description doesn't prevent every other configured server from
+    # being usable. Returns $null when no server yielded a usable config.
     $configs = @(
         foreach ($srv in $Servers) {
             $cmd = $srv.Properties['Command']
             if (-not $cmd) {
-                throw "Server '$($srv.Name)' has no 'Command' field. Is `devin mcp list` output format unchanged?"
+                Write-Warning "Skipping server '$($srv.Name)': no 'Command' field. Is `devin mcp list` output format unchanged?"
+                continue
             }
 
             $parts = Split-CommandLine -CommandLine $cmd
             if ($parts.Count -eq 0) {
-                throw "Server '$($srv.Name)' has an empty command."
+                Write-Warning "Skipping server '$($srv.Name)': empty command."
+                continue
             }
 
             [pscustomobject]@{
@@ -158,6 +163,10 @@ function ConvertTo-McpServerJson {
             }
         }
     )
+
+    if ($configs.Count -eq 0) {
+        return $null
+    }
 
     return ConvertTo-Json -InputObject $configs -Depth 5 -Compress:$false
 }
@@ -224,33 +233,47 @@ function Invoke-McpClient {
 }
 
 # --- Main -------------------------------------------------------------------
+# Everything below is wrapped in try/catch so that any failure (missing
+# devin/python, a malformed `devin mcp list` output, a filesystem error,
+# etc.) produces a clean, actionable error message and a non-zero exit code
+# instead of a raw PowerShell stack trace.
 
-$devinPath = Test-DevinCli
-Write-Verbose "Using devin CLI at $devinPath"
-
-$rawList = Invoke-DevinMcpList
-Write-Verbose "`devin mcp list` output:`n$rawList"
-
-$servers = ConvertFrom-DevinMcpList -Text $rawList
-if ($servers.Count -eq 0) {
-    Write-Host "No MCP servers are configured in the Devin CLI."
-    exit 0
-}
-
-Write-Verbose "Discovered $($servers.Count) MCP server(s): $($servers.Name -join ', ')"
-
-$configJson = ConvertTo-McpServerJson -Servers $servers
-
-$tempConfig = [System.IO.Path]::GetTempFileName()
 try {
-    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($tempConfig, $configJson, $utf8NoBom)
-    Write-Verbose "Wrote temporary MCP config to $tempConfig"
+    $devinPath = Test-DevinCli
+    Write-Verbose "Using devin CLI at $devinPath"
 
-    Invoke-McpClient -ConfigPath $tempConfig -StatusMode:$Status -ToolName $Call -ToolArgs $Arguments
-}
-finally {
-    if (Test-Path $tempConfig) {
-        Remove-Item $tempConfig -Force -ErrorAction SilentlyContinue
+    $rawList = Invoke-DevinMcpList
+    Write-Verbose "`devin mcp list` output:`n$rawList"
+
+    $servers = ConvertFrom-DevinMcpList -Text $rawList
+    if ($servers.Count -eq 0) {
+        Write-Host "No MCP servers are configured in the Devin CLI."
+        exit 0
     }
+
+    Write-Verbose "Discovered $($servers.Count) MCP server(s): $($servers.Name -join ', ')"
+
+    $configJson = ConvertTo-McpServerJson -Servers $servers
+    if (-not $configJson) {
+        Write-Host "No usable MCP servers were found (all entries were malformed)."
+        exit 0
+    }
+
+    $tempConfig = [System.IO.Path]::GetTempFileName()
+    try {
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($tempConfig, $configJson, $utf8NoBom)
+        Write-Verbose "Wrote temporary MCP config to $tempConfig"
+
+        Invoke-McpClient -ConfigPath $tempConfig -StatusMode:$Status -ToolName $Call -ToolArgs $Arguments
+    }
+    finally {
+        if (Test-Path $tempConfig) {
+            Remove-Item $tempConfig -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+catch {
+    Write-Error "devin-mcp-tools failed: $($_.Exception.Message)"
+    exit 1
 }

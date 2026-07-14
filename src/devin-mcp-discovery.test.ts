@@ -11,6 +11,7 @@ import assert from "node:assert";
 import {
   parseDevinMcpList,
   buildMcpServersConfig,
+  buildMcpServersConfigLenient,
   resolveMcpServersConfig,
 } from "./devin-mcp-discovery.ts";
 
@@ -96,6 +97,37 @@ describe("buildMcpServersConfig", { concurrency: true }, () => {
     const servers = parseDevinMcpList(SAMPLE_OUTPUT);
     const config = buildMcpServersConfig(servers, 60);
     assert.strictEqual(config[0].timeout, 60);
+  });
+});
+
+describe("buildMcpServersConfigLenient", { concurrency: true }, () => {
+  it("returns the same configs as the strict builder when all servers are valid", () => {
+    const servers = parseDevinMcpList(SAMPLE_OUTPUT);
+    const { configs, skipped } = buildMcpServersConfigLenient(servers, 30);
+    assert.deepStrictEqual(configs, buildMcpServersConfig(servers, 30));
+    assert.deepStrictEqual(skipped, []);
+  });
+
+  it("skips a malformed server but keeps the valid ones", () => {
+    const servers = [
+      { name: "GOOD", command: "", properties: { Command: "some-cmd --flag" } },
+      { name: "BAD", command: "", properties: {} },
+    ];
+    const { configs, skipped } = buildMcpServersConfigLenient(servers, 30);
+    assert.strictEqual(configs.length, 1);
+    assert.strictEqual(configs[0].name, "GOOD");
+    assert.strictEqual(skipped.length, 1);
+    assert.match(skipped[0], /BAD.*no Command value/);
+  });
+
+  it("returns no configs (not a throw) when every server is malformed", () => {
+    const servers = [
+      { name: "BAD1", command: "", properties: {} },
+      { name: "BAD2", command: "", properties: {} },
+    ];
+    const { configs, skipped } = buildMcpServersConfigLenient(servers, 30);
+    assert.deepStrictEqual(configs, []);
+    assert.strictEqual(skipped.length, 2);
   });
 });
 
