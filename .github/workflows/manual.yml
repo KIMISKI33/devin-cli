@@ -1,0 +1,23 @@
+name: Run My Custom Tasks
+on:
+  workflow_dispatch:
+
+jobs:
+  run-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Node Dependencies
+        run: npm ci
+
+      - name: Execute Python Test Suite
+        run: |
+          echo "Executing test_recon_suite.py..."
+          python tests/test_recon_suite.py
