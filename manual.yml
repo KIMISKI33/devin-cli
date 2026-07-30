@@ -1,0 +1,1 @@
+name: Run My Custom Taskson:  workflow_dispatch: # This line creates a physical button in GitHubjobs:  run-tasks:    runs-on: ubuntu-latest    steps:      - name: Run Everything        run: echo "Put whatever custom commands you want here!"
