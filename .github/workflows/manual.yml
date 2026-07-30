@@ -7,10 +7,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2 # Updated to patch Node deprecation
 
       - name: Set up Python Environment
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.3.0 # Updated to patch Node deprecation
         with:
           python-version: '3.x'
 
@@ -19,5 +19,6 @@ jobs:
 
       - name: Execute Python Test Suite
         run: |
-          echo "Executing test_recon_suite.py..."
-          python tests/test_recon_suite.py
+          echo "Executing test_recon_suite.py with verbose logs..."
+          # Adding the -v flag forces Python to print exactly which test is failing
+          python -m unittest -v tests.test_recon_suite
