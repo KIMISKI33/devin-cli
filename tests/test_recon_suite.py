@@ -133,7 +133,10 @@ class TestAsyncPortScanning(unittest.IsolatedAsyncioTestCase):
         """Verify async scanning provides performance benefit"""
         # This is a conceptual test - in real implementation would measure timing
         scanner = MagicMock()
-        scanner.scan_port = AsyncMock(return_value=True)
+        async def _mock_scan(host, port):
+            await asyncio.sleep(0.01)
+            return True
+        scanner.scan_port = _mock_scan
 
         ports = [80, 443, 22, 21, 25, 110, 143, 993, 995, 587]
 
@@ -144,7 +147,6 @@ class TestAsyncPortScanning(unittest.IsolatedAsyncioTestCase):
         async_time = asyncio.get_event_loop().time() - start
 
         # Reset and test sequential
-        scanner.scan_port.reset_mock()
         start = asyncio.get_event_loop().time()
         for port in ports:
             await scanner.scan_port("127.0.0.1", port)

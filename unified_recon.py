@@ -65,7 +65,8 @@ class UnifiedRecon:
     def run_network_discovery(
         self,
         subnet: str = None,
-        known_hosts: List[Dict] = None
+        known_hosts: List[Dict] = None,
+        scan_services: bool = True
     ) -> Dict:
         """
         Phase 1: Discover network topology
@@ -77,7 +78,7 @@ class UnifiedRecon:
         results = self.network_mapper.run_discovery(
             subnet=subnet,
             known_hosts=known_hosts,
-            scan_services=True
+            scan_services=scan_services
         )
 
         self.recon_results["network_topology"] = results
