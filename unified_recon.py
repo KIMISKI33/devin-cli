@@ -205,7 +205,10 @@ class UnifiedRecon:
         user: str,
         key: str
     ) -> Optional[Dict]:
-        """Run inventory scanner via SSH"""
+        """Run inventory via SSH using host keys provisioned in known-hosts files.
+
+        Unknown or changed host keys are rejected; verify keys out of band first.
+        """
         try:
             # Copy script to remote
             script_path = Path(__file__).parent / "linux-inventory-scanner.sh"
@@ -217,10 +220,12 @@ class UnifiedRecon:
             # Create remote temp path
             remote_path = f"/tmp/linux-inventory-{datetime.now().strftime('%s')}.sh"
 
-            # SCP script to target
-            scp_cmd = ["scp", "-o", "StrictHostKeyChecking=no"]
+            ssh_options = ["-o", "StrictHostKeyChecking=yes"]
             if key:
-                scp_cmd.extend(["-i", key])
+                ssh_options.extend(["-i", key])
+
+            # SCP script to target
+            scp_cmd = ["scp", *ssh_options]
             scp_cmd.extend([str(script_path), f"{user}@{target}:{remote_path}"])
 
             result = subprocess.run(scp_cmd, capture_output=True, timeout=30)
@@ -229,9 +234,7 @@ class UnifiedRecon:
                 return None
 
             # Execute remotely
-            ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no"]
-            if key:
-                ssh_cmd.extend(["-i", key])
+            ssh_cmd = ["ssh", *ssh_options]
             ssh_cmd.extend([f"{user}@{target}", f"bash {remote_path}"])
 
             if self.stealth:
@@ -246,7 +249,7 @@ class UnifiedRecon:
 
             # Cleanup remote script
             subprocess.run([
-                "ssh", "-o", "StrictHostKeyChecking=no",
+                "ssh", *ssh_options,
                 f"{user}@{target}", f"rm {remote_path}"
             ], capture_output=True)
 
