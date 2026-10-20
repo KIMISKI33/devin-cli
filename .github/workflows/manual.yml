@@ -23,6 +23,9 @@ jobs:
       - name: Install Node Dependencies
         run: npm ci
 
+      - name: Run Agent Test Suite
+        run: npm test
+
       - name: Execute Python Test Suite
         run: |
           echo "Executing test_recon_suite.py with verbose logs..."
