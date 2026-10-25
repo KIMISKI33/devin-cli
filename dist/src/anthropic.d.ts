@@ -2,6 +2,7 @@ import { MessagesClient } from './loop';
 export interface AnthropicClientOptions {
     apiKey: string;
     baseUrl?: string;
+    workspaceId?: string;
     maxRetries?: number;
     timeoutMs?: number;
     fetchImpl?: (url: string, init: any) => Promise<any>;

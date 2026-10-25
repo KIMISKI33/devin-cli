@@ -117,4 +117,41 @@ const reply = (status, body, headers = {}) => ({
     process.off('warning', listener);
     assert.deepEqual(seen, ['something else']);
 });
+(0, node_test_1.test)('sends anthropic-workspace-id only when configured', async () => {
+    const headers = [];
+    const fetchImpl = async (_url, init) => {
+        headers.push(init.headers);
+        return reply(200, {});
+    };
+    await (0, anthropic_1.createAnthropicClient)({ apiKey: 'k', workspaceId: 'wrkspc_123', fetchImpl }).messages.create({});
+    await (0, anthropic_1.createAnthropicClient)({ apiKey: 'k', workspaceId: '', fetchImpl }).messages.create({});
+    assert.equal(headers[0]['anthropic-workspace-id'], 'wrkspc_123');
+    assert.equal('anthropic-workspace-id' in headers[1], false);
+});
+const unscoped = () => reply(400, { type: 'error', error: { type: 'invalid_request_error', message: 'must include the anthropic-workspace-id header' } });
+(0, node_test_1.test)('discovers the only workspace for unscoped keys and reuses it', async () => {
+    const calls = [];
+    const client = (0, anthropic_1.createAnthropicClient)({
+        apiKey: 'k',
+        workspaceId: '',
+        fetchImpl: async (url, init) => {
+            calls.push({ url, headers: init.headers });
+            if (url.includes('/workspaces'))
+                return reply(200, { data: [{ id: 'wrkspc_old', archived_at: '2026' }, { id: 'wrkspc_1', archived_at: null }] });
+            return init.headers['anthropic-workspace-id'] ? reply(200, { ok: 1 }) : unscoped();
+        }
+    });
+    assert.deepEqual(await client.messages.create({}), { ok: 1 });
+    assert.deepEqual(await client.messages.create({}), { ok: 1 });
+    assert.equal(calls.filter((c) => c.url.includes('/workspaces')).length, 1);
+    assert.equal(calls.at(-1).headers['anthropic-workspace-id'], 'wrkspc_1');
+});
+(0, node_test_1.test)('asks for ANTHROPIC_WORKSPACE_ID when the workspace is ambiguous', async () => {
+    const client = (0, anthropic_1.createAnthropicClient)({
+        apiKey: 'k',
+        workspaceId: '',
+        fetchImpl: async (url) => url.includes('/workspaces') ? reply(200, { data: [{ id: 'a', archived_at: null }, { id: 'b', archived_at: null }] }) : unscoped()
+    });
+    await assert.rejects(client.messages.create({}), /set ANTHROPIC_WORKSPACE_ID/);
+});
 //# sourceMappingURL=anthropic.test.js.map
