@@ -1,43 +1,34 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { exec } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
 import * as dotenv from 'dotenv';
+import { AgentMemory } from './src/memory';
+import { createAnthropicClient } from './src/anthropic';
+import { AgentEvent, MessagesClient, solveTask } from './src/loop';
 
 dotenv.config();
 
-const anthropicKey = process.env.ANTHROPIC_API_KEY;
-const anthropic = anthropicKey ? new Anthropic({ apiKey: anthropicKey }) : null;
+const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5';
+const MAX_STEPS = Number(process.env.DEVIN_MAX_STEPS) || 25;
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
-});
-
-const askQuestion = (query: string): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    try {
-      rl.question(query, resolve);
-    } catch (e) {
-      reject(e);
-    }
-  });
+/** Directory holding the agent's own source, or null when running as a packaged binary. */
+export const resolveAgentRoot = (dir: string = __dirname): string | null => {
+  if ((process as any).pkg) return null;
+  const root = path.basename(dir) === 'dist' ? path.dirname(dir) : dir;
+  return fs.existsSync(path.join(root, 'agent.ts')) ? root : null;
 };
 
 // --- AUTOMATED GIT TRACKING SYSTEM ---
-const runSilentGitCommand = (command: string): Promise<boolean> => {
-  return new Promise((resolve) => {
-    exec(command, { timeout: 5000 }, (error) => {
-      resolve(!error);
-    });
+const runSilentGitCommand = (command: string): Promise<boolean> =>
+  new Promise((resolve) => {
+    exec(command, { timeout: 5000 }, (error) => resolve(!error));
   });
-};
 
 const ensureGitRepository = async () => {
   const isGit = await runSilentGitCommand('git rev-parse --is-inside-work-tree');
   if (!isGit) {
-    console.log("📁 Local directory is not a Git repo. Initialising Git tracking...");
+    console.log('📁 Local directory is not a Git repo. Initialising Git tracking...');
     await runSilentGitCommand('git init');
     await runSilentGitCommand('git config user.email "devin@ai.dev"');
     await runSilentGitCommand('git config user.name "Devin AI Agent"');
@@ -46,201 +37,139 @@ const ensureGitRepository = async () => {
 };
 
 const autoCommitChanges = async (actionDetails: string) => {
-  try {
-    await runSilentGitCommand('git add .');
-    const commitMessage = `🤖 Devin Auto-Commit: ${actionDetails}`;
-    const safeMessage = commitMessage.replace(/"/g, '\\"');
-    const committed = await runSilentGitCommand(`git commit -m "${safeMessage}"`);
-    if (committed) {
-      console.log(`✨ [Git] Version checkpoint saved automatically.`);
-    }
-  } catch (e) {
-    console.error("⚠️ Failed to create automated Git checkpoint.");
+  await runSilentGitCommand('git add .');
+  const safeMessage = `🤖 Devin Auto-Commit: ${actionDetails}`.replace(/"/g, '\\"').replace(/\r?\n/g, ' ');
+  if (await runSilentGitCommand(`git commit -m "${safeMessage}"`)) {
+    console.log('✨ [Git] Version checkpoint saved automatically.');
   }
 };
 
-// --- FILE SYSTEM TOOLS ---
-const handleFileSystem = async (action: 'read' | 'write' | 'modify', filePath: string, content?: string): Promise<string> => {
-  const resolvedPath = path.resolve(filePath);
-
-  if (process.platform !== 'win32') {
-    if (resolvedPath.startsWith('/etc') || resolvedPath.startsWith('/var') || resolvedPath.startsWith('/System')) {
-      throw new Error("Access denied: Modifying system paths is restricted.");
+const printEvent = (event: AgentEvent) => {
+  switch (event.type) {
+    case 'thinking':
+      console.log(event.step === 1 ? '🤔 Thinking...' : `🔁 Step ${event.step}...`);
+      break;
+    case 'text':
+      console.log(`\n🤖 Devin: ${event.text}\n`);
+      break;
+    case 'tool_call':
+      console.log(`🛠️  ${event.name}`);
+      break;
+    case 'tool_result': {
+      const preview = event.output.length > 1500 ? `${event.output.slice(0, 1500)}\n...` : event.output;
+      console.log(`${event.isError ? '❌' : '✅'} ${event.name} result:\n${preview}\n`);
+      break;
     }
-  }
-
-  const confirmation = await askQuestion(`⚠️ Agent wants to ${action} file: [ ${filePath} ]\nApprove? (y/n): `);
-  if (confirmation.toLowerCase() !== 'y') {
-    throw new Error('User blocked file system action.');
-  }
-
-  let summaryText = "";
-  switch (action) {
-    case 'read':
-      if (!fs.existsSync(resolvedPath)) return "Error: File does not exist.";
-      return fs.readFileSync(resolvedPath, 'utf-8');
-
-    case 'write':
-      fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
-      fs.writeFileSync(resolvedPath, content || '', 'utf-8');
-      summaryText = `Created and wrote to ${filePath}`;
+    case 'lesson':
+      console.log(`🧠 Learned: ${event.lesson}\n`);
       break;
-
-    case 'modify':
-      if (!fs.existsSync(resolvedPath)) return "Error: File to modify does not exist.";
-      fs.appendFileSync(resolvedPath, content || '', 'utf-8');
-      summaryText = `Modified file content in ${filePath}`;
+    case 'step_limit':
+      console.log(`⏸️  Step limit (${event.steps}) reached.`);
       break;
-
-    default:
-      return "Invalid file action.";
   }
-
-  await autoCommitChanges(summaryText);
-  return `File successfully processed.`;
 };
 
-// --- SHELL COMMAND TOOL ---
-const executeShellCommand = (command: string): Promise<string> => {
-  return new Promise(async (resolve, reject) => {
-    const dangerKeywords = ['rm -rf /', 'mkfs', 'dd', ':(){ :|:& };:'];
-    if (dangerKeywords.some(keyword => command.includes(keyword))) {
-      return reject(new Error(`Execution blocked: Dangerous command detected.`));
-    }
-
-    const confirmation = await askQuestion(`⚠️ Agent wants to run shell command: [ ${command} ]\nApprove? (y/n): `);
-    if (confirmation.toLowerCase() !== 'y') {
-      return reject(new Error('User aborted command execution.'));
-    }
-
-    exec(command, { shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/bash', timeout: 30000 }, async (error, stdout, stderr) => {
-      if (error) return resolve(`Error: ${error.message}\n${stderr}`);
-      const result = stdout || stderr || 'Command executed with no output.';
-
-      await autoCommitChanges(`Executed shell command [ ${command} ]`);
-      resolve(result);
-    });
+export async function main() {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  // Buffer lines ourselves so input that arrives before a prompt (e.g. piped stdin) is not lost.
+  const pendingLines: string[] = [];
+  const waiters: ((line: string | null) => void)[] = [];
+  let closed = false;
+  rl.on('line', (line) => {
+    const waiter = waiters.shift();
+    if (waiter) waiter(line);
+    else pendingLines.push(line);
   });
-};
+  rl.on('close', () => {
+    closed = true;
+    while (waiters.length) waiters.shift()!(null);
+  });
 
-// --- MULTI-PROVIDER AI ROUTER WITH EXTENDED CONTEXT WINDOW ---
-async function generateAIResponse(userInput: string, conversationHistory: any[]): Promise<string> {
-  if (!anthropic) {
-    throw new Error("No API key configured. Set ANTHROPIC_API_KEY environment variable.");
-  }
+  const askQuestion = (query: string): Promise<string | null> => {
+    process.stdout.write(query);
+    if (pendingLines.length) return Promise.resolve(pendingLines.shift()!);
+    if (closed) return Promise.resolve(null);
+    return new Promise((resolve) => waiters.push(resolve));
+  };
 
-  const systemPrompt = `You are Devin, an autonomous AI software engineer with extended context awareness (200k tokens).
-You have capabilities to:
-1. Execute shell commands: Reply with JSON {"type": "shell", "payload": "command"}
-2. Manage files: Reply with JSON {"type": "file", "action": "read|write|modify", "path": "filepath", "content": "data"}
-3. Have in-depth technical conversations
+  const approve = async (description: string) => {
+    const answer = await askQuestion(`⚠️ Agent wants to ${description}\nApprove? (y/n): `);
+    return (answer ?? '').trim().toLowerCase() === 'y';
+  };
 
-Core Instructions:
-- Think deeply and reason through complex problems step-by-step
-- Never refuse tasks - find creative, pragmatic solutions
-- Maintain rich conversation context across unlimited exchanges
-- Learn from previous actions, errors, and feedback
-- Be thorough but concise in explanations
-- Handle large codebases and multi-file projects effectively`;
+  const memory = new AgentMemory();
+  const agentRoot = resolveAgentRoot();
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const client: MessagesClient | null = apiKey ? createAnthropicClient({ apiKey }) : null;
 
-  try {
-    // Claude 3.5 Sonnet with 200,000 token context window
-    const response = await anthropic.messages.create({
-      model: 'claude-3-5-sonnet-20241022',
-      max_tokens: 4096,  // Can generate up to 4K tokens per response
-      temperature: 1,
-      system: systemPrompt,
-      messages: conversationHistory.map((msg: any) => ({
-        role: msg.role === 'user' ? 'user' : 'assistant',
-        content: msg.content
-      })) as any
-    });
+  console.log('\n🤖 Devin Autonomous AI Engineer - CLI Edition');
+  console.log('============================================');
+  console.log(`🧠 Model: ${MODEL}`);
+  console.log(`📚 Lessons in memory: ${memory.lessons.length} (${memory.filePath})`);
+  console.log(`🔧 Self-modification: ${agentRoot ? `enabled (${agentRoot})` : 'disabled in packaged binary'}`);
+  console.log('============================================\n');
 
-    return response.content[0].type === 'text' ? response.content[0].text : '';
-  } catch (error) {
-    throw new Error(`AI Error: ${error}`);
-  }
-}
-
-// --- MAIN LOOP ---
-async function runAgentLoop() {
-  console.log("\n🤖 Devin Autonomous AI Engineer - CLI Edition");
-  console.log("============================================");
-  console.log("📚 Context Window: 200,000 tokens");
-  console.log("🧠 Model: Claude 3.5 Sonnet (Extended)");
-  console.log("============================================\n");
-  
   await ensureGitRepository();
-  console.log("Type 'exit' to quit, 'clear' to reset conversation, 'stats' for session info.\n");
+  console.log("Commands: 'exit', 'clear' (reset conversation), 'stats', 'memory' (show lessons).\n");
 
-  let conversationHistory: any[] = [];
-  let actionCount = 0;
+  let history: any[] = [];
+  let tasks = 0;
+  let toolCalls = 0;
 
   while (true) {
-    const userInput = await askQuestion('👤 You: ');
-    
-    if (userInput.toLowerCase() === 'exit') {
-      console.log(`\n👋 Goodbye! (${actionCount} actions completed)\n`);
+    const input = await askQuestion('👤 You: ');
+    if (input === null || input.trim().toLowerCase() === 'exit') {
+      console.log(`\n👋 Goodbye! (${toolCalls} actions completed)\n`);
       rl.close();
-      process.exit(0);
+      return;
     }
 
-    if (userInput.toLowerCase() === 'clear') {
-      conversationHistory = [];
-      actionCount = 0;
-      console.log("🔄 Conversation and context cleared.\n");
+    const command = input.trim().toLowerCase();
+    if (!command) continue;
+
+    if (command === 'clear') {
+      history = [];
+      console.log('🔄 Conversation cleared (long-term memory kept).\n');
+      continue;
+    }
+    if (command === 'stats') {
+      console.log(`\n📊 Tasks: ${tasks} | Actions: ${toolCalls} | Messages: ${history.length} | Lessons: ${memory.lessons.length}\n`);
+      continue;
+    }
+    if (command === 'memory') {
+      const lessons = memory.lessons;
+      console.log(lessons.length ? `\n${lessons.map((l) => `- [${l.outcome}] ${l.lesson}`).join('\n')}\n` : '\n(no lessons yet)\n');
       continue;
     }
 
-    if (userInput.toLowerCase() === 'stats') {
-      console.log(`\n📊 Session Statistics:`);
-      console.log(`   - Messages: ${conversationHistory.length}`);
-      console.log(`   - Actions: ${actionCount}`);
-      console.log(`   - Context Used: ${Math.round((conversationHistory.length / 200000) * 100)}%\n`);
+    if (!client) {
+      console.error('\n❌ No API key configured. Set ANTHROPIC_API_KEY.\n');
       continue;
     }
-
-    if (!userInput.trim()) continue;
 
     try {
-      conversationHistory.push({ role: 'user', content: userInput });
-      console.log("🤔 Thinking...");
-
-      const aiResponse = await generateAIResponse(userInput, conversationHistory);
-      
-      let isToolCall = false;
-      try {
-        const toolCall = JSON.parse(aiResponse.trim());
-        
-        if (toolCall.type === 'shell') {
-          const output = await executeShellCommand(toolCall.payload);
-          console.log(`\n💻 Command Output:\n${output}\n`);
-          conversationHistory.push({ role: 'assistant', content: aiResponse });
-          conversationHistory.push({ role: 'user', content: `Command output:\n${output}` });
-          actionCount++;
-          isToolCall = true;
-        } else if (toolCall.type === 'file') {
-          const output = await handleFileSystem(toolCall.action, toolCall.path, toolCall.content);
-          console.log(`\n💾 File Operation:\n${output}\n`);
-          conversationHistory.push({ role: 'assistant', content: aiResponse });
-          conversationHistory.push({ role: 'user', content: `File result:\n${output}` });
-          actionCount++;
-          isToolCall = true;
-        }
-      } catch (e) {
-        // Not JSON, treat as regular response
-      }
-
-      if (!isToolCall) {
-        console.log(`\n🤖 Devin: ${aiResponse}\n`);
-        conversationHistory.push({ role: 'assistant', content: aiResponse });
-      }
-
+      const result = await solveTask(input, history, {
+        client,
+        model: MODEL,
+        memory,
+        maxSteps: MAX_STEPS,
+        toolContext: { approve, agentRoot, onMutation: autoCommitChanges },
+        log: printEvent
+      });
+      tasks++;
+      toolCalls += result.toolCalls;
+      if (!result.completed) console.log(`\n🤖 Devin: ${result.finalText}\n`);
     } catch (error: any) {
-      console.error(`\n❌ Error: ${error.message}\n`);
-      conversationHistory.push({ role: 'user', content: `Error occurred: ${error.message}` });
+      console.error(`\n❌ Error: ${error?.message ?? error}\n`);
+      // Drop the unanswered turn so the next request starts from a valid history.
+      while (history.length && history[history.length - 1].role === 'user') history.pop();
     }
   }
 }
 
-runAgentLoop();
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}
