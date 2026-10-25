@@ -1,10 +1,10 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { exec } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
 import * as dotenv from 'dotenv';
 import { AgentMemory } from './src/memory';
+import { createAnthropicClient } from './src/anthropic';
 import { AgentEvent, MessagesClient, solveTask } from './src/loop';
 
 dotenv.config();
@@ -100,7 +100,7 @@ export async function main() {
   const memory = new AgentMemory();
   const agentRoot = resolveAgentRoot();
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  const client: MessagesClient | null = apiKey ? (new Anthropic({ apiKey }) as any) : null;
+  const client: MessagesClient | null = apiKey ? createAnthropicClient({ apiKey }) : null;
 
   console.log('\n🤖 Devin Autonomous AI Engineer - CLI Edition');
   console.log('============================================');

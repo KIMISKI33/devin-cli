@@ -10,7 +10,7 @@
     "build": "tsc",
     "start": "ts-node agent.ts",
     "test": "tsc && node --test dist/tests/",
-    "package": "tsc && pkg . --targets node18-linux-x64,node18-macos-x64,node18-win-x64 --output devin"
+    "package": "tsc && pkg . --compress Brotli --targets node18-linux-x64,node18-macos-x64,node18-win-x64 --output devin"
   },
   "keywords": [
     "ai",
@@ -21,28 +21,25 @@
   "author": "Devin",
   "license": "MIT",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.28.0",
-    "@google/genai": "^2.10.0",
     "dotenv": "^16.4.5"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "typescript": "^5.0.0",
+    "pkg": "^5.8.1",
     "ts-node": "^10.9.0",
-    "pkg": "^5.8.1"
+    "typescript": "^5.0.0"
   },
   "pkg": {
     "scripts": [
       "dist/agent.js",
       "dist/src/**/*.js"
-    ],
-    "assets": [
-      "node_modules/@anthropic-ai/sdk/**/*",
-      "node_modules/dotenv/**/*"
     ]
   },
   "files": [
     "bin",
     "dist"
-  ]
+  ],
+  "engines": {
+    "node": ">=18"
+  }
 }

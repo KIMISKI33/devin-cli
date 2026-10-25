@@ -32,19 +32,16 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.resolveAgentRoot = void 0;
 exports.main = main;
-const sdk_1 = __importDefault(require("@anthropic-ai/sdk"));
 const child_process_1 = require("child_process");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const readline = __importStar(require("readline"));
 const dotenv = __importStar(require("dotenv"));
 const memory_1 = require("./src/memory");
+const anthropic_1 = require("./src/anthropic");
 const loop_1 = require("./src/loop");
 dotenv.config();
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5';
@@ -135,7 +132,7 @@ async function main() {
     const memory = new memory_1.AgentMemory();
     const agentRoot = (0, exports.resolveAgentRoot)();
     const apiKey = process.env.ANTHROPIC_API_KEY;
-    const client = apiKey ? new sdk_1.default({ apiKey }) : null;
+    const client = apiKey ? (0, anthropic_1.createAnthropicClient)({ apiKey }) : null;
     console.log('\n🤖 Devin Autonomous AI Engineer - CLI Edition');
     console.log('============================================');
     console.log(`🧠 Model: ${MODEL}`);
