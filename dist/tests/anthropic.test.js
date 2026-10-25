@@ -100,4 +100,21 @@ const reply = (status, body, headers = {}) => ({
     await assert.rejects(client.messages.create({}), /ECONNRESET/);
     assert.equal(count, 2);
 });
+(0, node_test_1.test)('points at the API key on 401', async () => {
+    const client = (0, anthropic_1.createAnthropicClient)({
+        apiKey: 'bad',
+        fetchImpl: async () => reply(401, { type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } })
+    });
+    await assert.rejects(client.messages.create({}), /401: invalid x-api-key \(check ANTHROPIC_API_KEY\)/);
+});
+(0, node_test_1.test)('hides only the fetch ExperimentalWarning', async () => {
+    const seen = [];
+    const listener = (w) => seen.push(w.message);
+    process.on('warning', listener);
+    process.emitWarning('The Fetch API is an experimental feature.', 'ExperimentalWarning');
+    process.emitWarning('something else', 'ExperimentalWarning');
+    await new Promise((resolve) => setImmediate(resolve));
+    process.off('warning', listener);
+    assert.deepEqual(seen, ['something else']);
+});
 //# sourceMappingURL=anthropic.test.js.map

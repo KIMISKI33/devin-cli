@@ -70,3 +70,22 @@ test('retries network errors then gives up', async () => {
   await assert.rejects(client.messages.create({}), /ECONNRESET/);
   assert.equal(count, 2);
 });
+
+test('points at the API key on 401', async () => {
+  const client = createAnthropicClient({
+    apiKey: 'bad',
+    fetchImpl: async () => reply(401, { type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } })
+  });
+  await assert.rejects(client.messages.create({}), /401: invalid x-api-key \(check ANTHROPIC_API_KEY\)/);
+});
+
+test('hides only the fetch ExperimentalWarning', async () => {
+  const seen: string[] = [];
+  const listener = (w: Error) => seen.push(w.message);
+  process.on('warning', listener);
+  process.emitWarning('The Fetch API is an experimental feature.', 'ExperimentalWarning');
+  process.emitWarning('something else', 'ExperimentalWarning');
+  await new Promise((resolve) => setImmediate(resolve));
+  process.off('warning', listener);
+  assert.deepEqual(seen, ['something else']);
+});

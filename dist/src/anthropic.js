@@ -1,6 +1,14 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createAnthropicClient = createAnthropicClient;
+// Node 18 prints an ExperimentalWarning the first time global fetch is used; it is stable enough here.
+const originalEmitWarning = process.emitWarning;
+process.emitWarning = ((warning, ...rest) => {
+    const type = typeof rest[0] === 'string' ? rest[0] : rest[0]?.type;
+    if (type === 'ExperimentalWarning' && String(warning?.message ?? warning).includes('Fetch API'))
+        return;
+    return originalEmitWarning.call(process, warning, ...rest);
+});
 const RETRYABLE = new Set([408, 409, 429, 500, 502, 503, 504, 529]);
 /**
  * Minimal Anthropic Messages API client over Node's built-in fetch, used
@@ -50,7 +58,8 @@ function createAnthropicClient(options) {
                 message = JSON.parse(body)?.error?.message ?? body;
             }
             catch { }
-            throw new Error(`Anthropic API ${response.status}: ${message}`);
+            const hint = response.status === 401 ? ' (check ANTHROPIC_API_KEY)' : '';
+            throw new Error(`Anthropic API ${response.status}: ${message}${hint}`);
         }
     };
     return { messages: { create } };
